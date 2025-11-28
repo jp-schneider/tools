@@ -1,0 +1,372 @@
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+import numpy as np
+import torch
+from tools.model.abstract_scene_node import AbstractSceneNode
+from tools.model.scene_node import SceneNode
+from tools.transforms.geometric.transforms3d import component_position_matrix
+from tools.util.typing import REAL_TYPE
+from tools.viz.matplotlib import saveable, set_axes_equal_3d
+from mpl_toolkits.mplot3d import Axes3D
+from tools.transforms.to_numpy import numpyify
+from tools.util.typing import NOTSET
+
+
+class VisualNode3D(SceneNode):
+    """Scene node for 3D scenes with visual implementation."""
+
+    # region Visualization
+
+    def _plot_scene_should_plot_object(self,
+                                       object_indices_blacklist: Optional[Set[Any]] = None,
+                                       object_indices_whitelist: Optional[Set[Any]] = None,
+                                       **kwargs
+                                       ) -> bool:
+        """Checks if the object should be plotted.
+
+        Parameters
+        ----------
+        component : AbstractSceneNode
+            The component to check.
+
+        object_indices_blacklist : Optional[Set[Any]], optional
+            The object indices blacklist.
+
+        object_indices_whitelist : Optional[Set[Any]] optional
+            The object indices whitelist.
+
+        Returns
+        -------
+        bool
+            If the object should be plotted.
+        """
+        idx = NOTSET
+        if object_indices_blacklist is not None:
+            if idx == NOTSET:
+                idx = self.get_index()
+            if idx in object_indices_blacklist:
+                return False
+        if object_indices_whitelist is not None:
+            if idx == NOTSET:
+                idx = self.get_index()
+            if idx not in object_indices_whitelist:
+                return False
+        return True
+
+    def _get_global_node_coordinate_system_vectors(self,
+                                                   length: float = 1.0,
+                                                   global_positions: Optional[torch.Tensor] = None,
+                                                   **kwargs
+                                                   ) -> torch.Tensor:
+        """Gets the coordinate system vectors of the node.
+
+        Parameters
+        ----------
+        length : float, optional
+            The length of the coordinate system vectors, by default 1.0.
+
+        global_positions : Optional[torch.Tensor], optional
+            The global positions of the node, by default None.
+            Will be calculated if not provided.
+            Should be of shape ([...,B], 4, 4).
+
+        Returns
+        -------
+        torch.Tensor
+            The coordinate system vectors in global coordinates.
+            Shape: ([...,B], 3, 2, 3).
+            Explanation:
+            - The first dims are for the batch.
+            - The 3rd to last dims are for the 3 vectors (x, y, z).
+            - The 2nd to last dims are for the start and end of the vector.
+            - The last is the 3D coordinate.
+            2 Dim is for start (=global position) and end (=global position @ vector).
+        """
+        from tools.util.torch import flatten_batch_dims, unflatten_batch_dims
+
+        if global_positions is None:
+            pos = self.get_global_position(**kwargs)
+
+        pos, shp = flatten_batch_dims(pos, -3)
+        cord_vec_x = component_position_matrix(
+            x=length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+        cord_vec_y = component_position_matrix(
+            y=length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+        cord_vec_z = component_position_matrix(
+            z=length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+
+        x_vec = torch.bmm(pos, cord_vec_x)[..., :3, 3]
+        y_vec = torch.bmm(pos, cord_vec_y)[..., :3, 3]
+        z_vec = torch.bmm(pos, cord_vec_z)[..., :3, 3]
+
+        vecs = torch.stack([x_vec, y_vec, z_vec], dim=-2)  # ([...,B], 3, 3)
+        vecs = vecs.unsqueeze(-2)  # ([...,B], 3, 1, 3)
+
+        # ([...,B], 3, 1, 3)
+        start = pos[..., :3, 3].unsqueeze(-2).unsqueeze(-2).repeat(1, 3, 1, 1)
+        v = torch.cat([start, vecs], dim=-2)  # ([...,B], 3, 2, 3)
+        return unflatten_batch_dims(v, shp)
+
+    def _plot_scene_get_positions(
+            self,
+            component: AbstractSceneNode,
+            ax: Axes3D,
+            coordinate_system_indicator_length: float = 0.3,
+            plot_line_to_child: bool = False,
+            object_indices_blacklist: Optional[Set[Any]] = None,
+            object_indices_whitelist: Optional[Set[Any]] = None,
+            child_args: Optional[Dict[str, Any]] = None,
+            **kwargs
+    ) -> List[
+            Tuple[torch.Tensor,
+                  List[torch.Tensor],
+                  List[str]]]:
+        # Get global position
+        pos = component.get_global_position(**kwargs)
+        origin = pos[..., :3, 3]
+
+        if len(pos.shape) == 2:
+            pos = pos.unsqueeze(0)
+
+        if len(origin.shape) == 1:
+            origin = origin.unsqueeze(0)
+
+        T, _, _ = pos.shape
+
+        # 3 Vectors indicating local coordinate system
+        cord_vec_x = component_position_matrix(
+            x=coordinate_system_indicator_length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+        cord_vec_y = component_position_matrix(
+            y=coordinate_system_indicator_length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+        cord_vec_z = component_position_matrix(
+            z=coordinate_system_indicator_length, dtype=pos.dtype, device=pos.device).repeat(pos.shape[0], 1, 1)
+
+        x_vec = torch.bmm(pos, cord_vec_x)[..., :3, 3]
+        y_vec = torch.bmm(pos, cord_vec_y)[..., :3, 3]
+        z_vec = torch.bmm(pos, cord_vec_z)[..., :3, 3]
+
+        vecs = []
+        for b in range(T):
+            local_vecs = [x_vec[b], y_vec[b], z_vec[b]]
+            texts = ["x", "y", "z"]
+            vecs.append((origin[b], local_vecs, texts))
+
+        for child in component.get_scene_children():
+            child: VisualNode3D
+            target = child.get_global_position()[..., :3, 3]
+            should_plot = child._plot_scene_should_plot_object(
+                object_indices_blacklist,
+                object_indices_whitelist,
+                **child_args
+            )
+            if should_plot:
+                if plot_line_to_child:
+                    local_vecs.append(target)
+                    texts.append("")
+                child.plot_object(ax, **child_args)
+            child_vecs = self._plot_scene_get_positions(child,
+                                                        ax=ax,
+                                                        coordinate_system_indicator_length=coordinate_system_indicator_length,
+                                                        plot_line_to_child=plot_line_to_child,
+                                                        object_indices_blacklist=object_indices_blacklist,
+                                                        object_indices_whitelist=object_indices_whitelist,
+                                                        child_args=child_args,
+                                                        **kwargs
+                                                        )
+            for cv in child_vecs:
+                vecs.append(cv)
+        return vecs
+
+    @saveable()
+    def plot_scene(self,
+                   plot_coordinate_systems: bool = False,
+                   plot_line_to_child: bool = False,
+                   plot_coordinate_annotations: bool = False,
+                   coordinate_system_indicator_length: float = 0.3,
+                   units: Optional[Union[List[str], str]] = None,
+                   ax: Optional[Axes3D] = None,
+                   x_lim: Optional[Tuple[REAL_TYPE,
+                                         REAL_TYPE]] = None,
+                   y_lim: Optional[Tuple[REAL_TYPE,
+                                         REAL_TYPE]] = None,
+                   z_lim: Optional[Tuple[REAL_TYPE,
+                                         REAL_TYPE]] = None,
+                   object_indices_blacklist: Optional[Union[Any,
+                                                            Iterable[Any]]] = None,
+                   object_indices_whitelist: Optional[Union[Any,
+                                                            Iterable[Any]]] = None,
+
+                   **kwargs
+                   ) -> Figure:
+        """Returns a matplotlib 3d plot with the scene.
+
+        Returns
+        -------
+        AxesImage
+            The created axis image.
+        """
+        if units is None:
+            units = [None] * 3
+        elif isinstance(units, list):
+            if len(units) < 3:
+                units += [None] * (3 - len(units))
+            units = units[:2]
+        elif isinstance(units, str):
+            units = [units] * 3
+
+        if object_indices_blacklist is not None:
+            if not hasattr(object_indices_blacklist, "__iter__"):
+                object_indices_blacklist = [object_indices_blacklist]
+            object_indices_blacklist = set(object_indices_blacklist)
+
+        if object_indices_whitelist is not None:
+            if not hasattr(object_indices_whitelist, "__iter__"):
+                object_indices_whitelist = [object_indices_whitelist]
+            object_indices_whitelist = set(object_indices_whitelist)
+
+        init_ax = False
+
+        # Set elevation, azimuth and roll if in kwargs
+        elev = kwargs.pop("elevation", None)
+        azim = kwargs.pop("azimuth", None)
+        roll = kwargs.pop("roll", None)
+        zoom = kwargs.pop("zoom", None)
+
+        if ax is None:
+            fig = plt.figure()
+            ax = plt.subplot(projection='3d')
+            ax.computed_zorder = False
+            init_ax = True
+        else:
+            fig = ax.get_figure()
+
+        args = dict(
+            plot_coordinate_systems=plot_coordinate_systems,
+            plot_coordinate_annotations=plot_coordinate_annotations,
+            coordinate_system_indicator_length=coordinate_system_indicator_length)
+        args.update(kwargs)
+
+        # Plot self
+
+        should_plot = self._plot_scene_should_plot_object(
+            object_indices_blacklist,
+            object_indices_whitelist,
+            **kwargs
+        )
+        if should_plot:
+            self.plot_object(ax, **args)
+
+        # Plot all children recursively, and get the positions of the coordinate systems
+        vec_positions = self._plot_scene_get_positions(
+            self, ax,
+            coordinate_system_indicator_length=coordinate_system_indicator_length,
+            plot_line_to_child=plot_line_to_child,
+            object_indices_blacklist=object_indices_blacklist,
+            object_indices_whitelist=object_indices_whitelist,
+            child_args=args,
+            **kwargs)
+
+        start_x = []
+        start_y = []
+        start_z = []
+        end_x = []
+        end_y = []
+        end_z = []
+        colors = []
+        colors_c = ["red", "green", "blue"] + \
+            (["purple"] if plot_line_to_child else [])
+
+        texts = []
+
+        for start, targets, text in vec_positions:
+            start = numpyify(start)
+            for i, target in enumerate(targets):
+                target = numpyify(target)
+                start_x.append(start[0])
+                start_y.append(start[1])
+                start_z.append(start[2])
+
+                end_x.append(target[0])
+                end_y.append(target[1])
+                end_z.append(target[2])
+                colors.append(
+                    colors_c[min(2 + (1 if plot_line_to_child else 0), i)])
+                texts.append(text[i])
+
+        starts = np.stack([start_x, start_y, start_z], axis=1)
+        ends = np.stack([end_x, end_y, end_z], axis=1)
+        all_positions = np.concatenate([starts, ends], axis=0)
+
+        if plot_coordinate_systems:
+            ax.scatter(*all_positions.swapaxes(0, 1), color=colors * 2)
+            for s in range(starts.shape[0]):
+                ax.plot([starts[s, 0], ends[s, 0]], [starts[s, 1], ends[s, 1]], [
+                        starts[s, 2], ends[s, 2]], color=colors[s])
+                mult = 0.5 if texts[s] in ["x", "y", "z"] else 1
+                if plot_coordinate_annotations:
+                    ax.text((starts[s, 0] + mult * (ends[s, 0] - starts[s, 0])),
+                            (starts[s, 1] + mult *
+                             (ends[s, 1] - starts[s, 1])),
+                            (starts[s, 2] + mult *
+                             (ends[s, 2] - starts[s, 2])),
+                            texts[s],
+                            horizontalalignment='center',
+                            verticalalignment='center')
+
+        if init_ax:
+            x_label = "X"
+            if units[0] is not None:
+                x_label += f" [{units[0]}]"
+            ax.set_xlabel(x_label)
+
+            y_label = "Y"
+            if units[1] is not None:
+                y_label += f" [{units[1]}]"
+            ax.set_ylabel(y_label)
+
+            z_label = "Z"
+            if units[2] is not None:
+                z_label += f" [{units[2]}]"
+
+            ax.set_zlabel(z_label)
+            if x_lim is not None:
+                ax.set_xlim(x_lim)
+            if y_lim is not None:
+                ax.set_ylim(y_lim)
+            if z_lim is not None:
+                ax.set_zlim(z_lim)
+
+            sba = dict()
+            if zoom is not None:
+                sba["zoom"] = zoom
+
+            ax.set_box_aspect([1.0, 1.0, 1.0], **sba)
+            set_axes_equal_3d(ax)
+            # ax.set_aspect('equal', adjustable='box')
+            # ax.set_box_aspect((np.ptp(all_positions[..., 0]), np.ptp(all_positions[..., 1]), np.ptp(all_positions[..., 2])))
+
+        if elev or azim or roll:
+            ax.view_init(elev=elev, azim=azim, roll=roll)
+        return fig
+
+    def plot_object(self, ax: Axes, **kwargs):
+        """Gets a projection 3D axis and is called during plot_coordinates
+        function. Can be used to plot arbitrary objects.
+
+        Parameters
+        ----------
+        ax : Axes
+            The axes to plot on.
+
+        **kwargs
+            Additional arguments.
+        """
+        if kwargs.get("plot_coordinate_annotations", False) and self._name is not None:
+            position = self.get_global_position(**kwargs)[..., :3, 3]
+            if len(position.shape) == 1:
+                ax.text(*position[:3], self._name,
+                        horizontalalignment='center', verticalalignment='center')
+
+    # endregion

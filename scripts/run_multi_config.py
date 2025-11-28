@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+# Sample job file for an omni job. Can be used as a standalone file or within a job list.
+from tools.run.multi_config_runner import MultiConfigRunner
+from tools.run.grid_search_runner import GridSearchRunner
+from tools.config.grid_search_config import GridSearchConfig
+from tools.config.multi_config_config import MultiConfigConfig
+from tools.logger.logging import basic_config
+import argparse
+import asyncio
+import logging  # noqa
+import os
+os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+
+
+def current_filename() -> str:
+    return os.path.basename(__file__).split('.')[0]
+
+
+def config():
+    from tools.mixin.argparser_mixin import set_warning_on_unsupported_type
+    set_warning_on_unsupported_type(False)
+    basic_config()
+
+
+def get_config() -> MultiConfigConfig:
+    parser = argparse.ArgumentParser(
+        description='Can run multiple configs, one after another.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    config = MultiConfigConfig.parse_args(parser, sep="-")
+    return config
+
+
+async def main(config: MultiConfigConfig):
+    from tools.logger.logging import logger
+    if isinstance(config, GridSearchConfig):
+        runner = GridSearchRunner(config)
+    elif isinstance(config, MultiConfigConfig):
+        runner = MultiConfigRunner(config)
+    runner.build(build_children=False)
+
+    # Training
+    if config.create_job_file:
+        logger.info(f"Creating job file...")
+        file = runner.create_job_file()
+        logger.info(f"Created job file at: {file}")
+
+    if not config.dry_run:
+        logger.info(f"Start training of: {config.name_experiment}")
+        runner.train()
+
+if __name__ == "__main__":
+    config()
+    cfg = get_config()
+    from tools.logger.logging import logger
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main(cfg))
+        loop.close()
+    except Exception as err:
+        logger.exception(
+            f"Raised {type(err).__name__} in {current_filename()}, exiting...")
+        exit(1)
+    exit(0)

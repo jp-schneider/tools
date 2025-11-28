@@ -1,0 +1,107 @@
+from typing import Iterable, List, Literal, Optional, Set, Tuple, Union
+from matplotlib.figure import Figure
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
+from matplotlib.axes import Axes
+from tools.model.module_scene_node import ModuleSceneNode
+from tools.model.visual_node_3d import VisualNode3D
+from tools.serialization.json_convertible import JsonConvertible
+from tools.model.abstract_scene_node import AbstractSceneNode
+from tools.transforms.geometric.transforms3d import (assure_homogeneous_matrix,
+                                                     assure_homogeneous_vector,
+                                                     component_position_matrix,
+                                                     component_rotation_matrix, flatten_batch_dims, position_quaternion_to_affine_matrix, rotmat_to_unitquat, split_transformation_matrix,
+                                                     transformation_matrix, unflatten_batch_dims)
+from tools.util.typing import NUMERICAL_TYPE, VEC_TYPE
+from tools.util.torch import tensorify
+from tools.viz.matplotlib import saveable
+
+
+class ModuleSceneNode3D(ModuleSceneNode, VisualNode3D):
+    """Pytorch Module class for nodes within a scene."""
+
+    def __init__(self,
+                 name: Optional[str] = None,
+                 children: Optional[Iterable['AbstractSceneNode']] = None,
+                 decoding: bool = False,
+                 dtype: torch.dtype = torch.float32,
+                 **kwargs
+                 ):
+        super().__init__(name=name, children=children,
+                         decoding=decoding, dtype=dtype, **kwargs)
+
+    def get_global_position(self, **kwargs) -> torch.Tensor:
+        """Return the global position of the scene object, taking into account the position of the parents.
+
+        Returns
+        -------
+        torch.Tensor
+            Matrix describing the global position.
+        """
+        if self._parent is None:
+            return self.get_position(**kwargs)
+        else:
+            return self.get_parent().get_global_position(**kwargs) @ self.get_position(**kwargs)
+
+    def get_global_position_vector(self, **kwargs) -> torch.Tensor:
+        """Return the global position of the scene object as (x, y, z, w) vector,
+        taking into account the position of the parents.
+
+        Returns
+        -------
+        torch.Tensor
+            Vector describing the global position.
+        """
+        return self.get_global_position(**kwargs)[..., 3]
+
+    def local_to_global(self, v: torch.Tensor, **kwargs) -> torch.Tensor:
+        """Converts local vectors to global vectors.
+
+        Parameters
+        ----------
+        v : torch.Tensor
+            Vectors of shape ([... B,] 4) to convert.
+
+        Returns
+        -------
+        torch.Tensor
+            Vectors in global coordinates. Shape is ([... B,] 4).
+        """
+        v, v_batch_shape = flatten_batch_dims(v, -2)
+        glob_mat, _ = flatten_batch_dims(
+            self.get_global_position(**kwargs), -3)
+        res = torch.bmm(glob_mat.repeat(
+            v.shape[0], 1, 1), v.unsqueeze(-1)).squeeze(-1)
+        return unflatten_batch_dims(res, v_batch_shape)
+
+    # region Visualization
+    @torch.no_grad()
+    def plot_object(self, ax: Axes, **kwargs):
+        """Gets a projection 3D axis and is called during plot_coordinates
+        function. Can be used to plot arbitrary objects.
+
+        Parameters
+        ----------
+        ax : Axes
+            The axes to plot on.
+
+        **kwargs
+            Additional arguments.
+        """
+        if kwargs.get("plot_coordinate_annotations", False) and self._name is not None:
+            position = self.get_global_position_vector()
+            ax.text(*position[:3], self._name,
+                    horizontalalignment='center', verticalalignment='center')
+
+    @saveable()
+    @torch.no_grad()
+    def plot_scene(self,
+                   *args,
+                   **kwargs
+                   ) -> Figure:
+        return super().plot_scene(*args, **kwargs)
+
+    # endregion
