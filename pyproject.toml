@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "tools"
 version = "0.1.2"
-description = "A semi-structured collection of general tools and functions that I have implemented for my research projects."
+description = "A semi-structured collection of general tools and functions, implemented for my research projects."
 authors = [ "Jan Philipp Schneider <jp-schneider@users.noreply.github.com>",]
 readme = "README.md"
 
