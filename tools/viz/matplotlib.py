@@ -12,7 +12,7 @@ from matplotlib.image import AxesImage
 from tools.segmentation.masking import value_mask_to_channel_masks
 from tools.util.format import parse_format_string
 from tools.util.numpy import numpyify_image, numpyify
-from tools.util.torch import VEC_TYPE
+from tools.util.typing import VEC_TYPE
 from tools.transforms.numpy.min_max import MinMax
 from tools.logger.logging import logger
 try:
@@ -894,7 +894,9 @@ def plot_as_image(data: VEC_TYPE,
                   quantile_clipping_range: Tuple[float, float] = (
                       0.0005, 0.9995),
                   colorbar_hook: Optional[Callable[[
-                      mpl.colorbar.Colorbar, Axes, int, int], None]] = None
+                      mpl.colorbar.Colorbar, Axes, int, int], None]] = None,
+                  legend_artists: Optional[Union[List[LegendArtist]]] = None,
+                    legend_kwargs: Optional[Dict[str, Any]] = None
                   ) -> AxesImage:
     """Plots a 2D (complex) image with matplotib. Supports numpy arrays and torch tensors.
 
@@ -996,6 +998,17 @@ def plot_as_image(data: VEC_TYPE,
     colorbar_hook : Optional[Callable[[Axes, int, int], None]], optional
         Optional hook function which is called after the colorbar is created.
         The function receives the colorbar axes, the row and column index of the image as input.
+
+    legend_artists : Optional[List[LegendArtist]], optional
+        Optional list of legend patches / artists to add to the axis legend.
+        Can be used to add custom legend entries to the plot.
+        Entries can be created with matplotlib.patches.Patch or other legend artist classes,
+        or with helper functions like tools.viz.create_legend_patches function.
+
+    legend_kwargs : Optional[Dict[str, Any]], optional
+        Optional kwargs for the legend creation, by default None
+        Will be passed to the ax.legend constructor.
+        See https://matplotlib.org/stable/api/legend_api.html for more information.
 
     Returns
     -------
@@ -1421,11 +1434,54 @@ def plot_as_image(data: VEC_TYPE,
                         value = color_mapping[value]
                     patches.append(Patch(color=c, label=f"{value:n}"))
                 ax.legend(handles=patches)
+            if legend_artists is not None and len(legend_artists) > 0:
+               # Check if legend artists is list of lists
+               test_item = legend_artists[0]
+               is_lol = isinstance(test_item, (Iterable)) and not isinstance(test_item, LegendArtist)
+               artists = legend_artists[row * cols + col] if is_lol else legend_artists
+               if legend_kwargs is None:
+                   legend_kwargs = dict()
+               preserve_legend(ax, artists, create_if_not_exists=True, **legend_kwargs)
+            
 
     if title is not None:
         fig.suptitle(title)
     return fig
 
+def create_legend_patches(labels: List[str],
+                          colors: List[Union[str, np.ndarray]],
+                          edgecolor: str = 'black',
+                          linewidth: int = 0,
+                          alpha: float = 1.0) -> List[Patch]:
+    """
+    Creates legend patches for given labels and colors.
+
+    Parameters
+    ----------
+    labels : List[str]
+        List of labels for the legend.
+
+    colors : List[Union[str, np.ndarray]]
+        List of colors for the legend.
+
+    edgecolor : str, optional
+        Edgecolor for the patches, by default 'black'
+
+    alpha : float, optional
+        Alpha value for the patches, by default 1.0
+
+    Returns
+    -------
+    List[Patch]
+        List of created legend patches.
+    """
+    from matplotlib.patches import Patch
+    patches = []
+    for label, color in zip(labels, colors):
+        patch = Patch(facecolor=color, edgecolor=edgecolor, linewidth=linewidth,
+                      label=label, alpha=alpha)
+        patches.append(patch)
+    return patches
 
 def append_colorbar_to_axes(handle: Any, ax: Axes, tick_format: Optional[str] = None):
     """

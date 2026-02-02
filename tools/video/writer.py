@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Any, Dict
 import cv2
 import numpy as np
 from tools.util.typing import DEFAULT, _DEFAULT, VEC_TYPE
@@ -28,7 +28,7 @@ class Writer():
             codec = os.environ.get('VIDEO_CODEC', 'avc1')
         return cv2.VideoWriter_fourcc(*codec)
 
-    def _process_frame(self, frame: np.ndarray) -> np.ndarray:
+    def _process_frame(self, frame: np.ndarray, context: Optional[Dict[str, Any]] = None) -> np.ndarray:
         """Process a single frame before writing to the video.
 
         Parameters
@@ -39,6 +39,8 @@ class Writer():
             Dtype is np.uint8.
             Channels are RGB or RGBA.
 
+        context: Optional[Dict[str, Any]]
+            Optional parameters which can be used by the writer to alter the behavior on a by-frame basis.
         Returns
         -------
         np.ndarray
@@ -46,7 +48,7 @@ class Writer():
         """
         return frame
 
-    def _write_frame(self, frame: np.ndarray) -> None:
+    def _write_frame(self, frame: np.ndarray, context:Optional[Dict[str, Any]] = None) -> None:
         """Write a single frame to the video.
 
         Parameters
@@ -56,6 +58,9 @@ class Writer():
             Shape is (H, W, C) where C is 1, 3, 4.
             Dtype is np.uint8.
             If C is 3 expect RGB. If C is 4 expect RGBA, while A is ignored.
+        
+        context: Optional[Dict[str, Any]]
+            Optional parameters which can be used by the writer to alter the behavior on a by-frame basis.
         """
         if len(frame.shape) == 2:
             frame = frame[:, :, None]
@@ -70,7 +75,7 @@ class Writer():
             pass
         else:
             raise ValueError(f"Unsupported channel size: {C}.")
-        frame = self._process_frame(frame)
+        frame = self._process_frame(frame, context)
         self.writer.write(frame[:, :, [2, 1, 0]])
         self.frame_counter += 1
 
@@ -91,20 +96,23 @@ class Writer():
         self.writer = cv2.VideoWriter(
             self.filename, self.fourcc, self.fps, (width, height))
 
-    def write(self, frame: VEC_TYPE) -> None:
+    def write(self, frame: VEC_TYPE, context: Optional[Dict[str, Any]] = None) -> None:
         """Write a frame to the video.
 
         Parameters
         ----------
         frames : Union[bytes, bytearray]
             Frame to write to the video.
+
+        context: Optional[Dict[str, Any]]
+            Optional parameters which can be used by the writer to alter the behavior on a by-frame basis.
         """
         frame = self.numpify_image(frame)
         if len(frame.shape) == 4:
             for i in range(frame.shape[0]):
-                self._write_frame(frame[i])
+                self._write_frame(frame[i], context)
         else:
-            self._write_frame(frame)
+            self._write_frame(frame, context)
 
     def __init__(self,
                  filename: str,

@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Union
 import numpy as np
 from tools.util.typing import NUMERICAL_TYPE, VEC_TYPE
 import sys
@@ -47,14 +47,14 @@ def flatten_batch_dims(array: np.ndarray, end_dim: int) -> Tuple[np.ndarray, Tup
     return flattened, batch_shape
 
 
-def unflatten_batch_dims(array: np.ndarray, batch_shape: List[int]) -> np.ndarray:
+def unflatten_batch_dims(array: np.ndarray, batch_shape: Union[List[int], Tuple[int, ...]]) -> np.ndarray:
     """Method to unflatten a numpy array, which was previously flattened using flatten_batch_dims.
 
     Parameters
     ----------
     array : np.ndarray
         Tensor to unflatten.
-    batch_shape : List[int]
+    batch_shape : Union[List[int], Tuple[int, ...]]
         Batch shape to unflatten.
 
     Returns

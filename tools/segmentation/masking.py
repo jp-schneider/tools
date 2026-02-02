@@ -1,16 +1,28 @@
 from matplotlib.colors import to_rgba
 from typing import Any, Dict, List, Optional, Literal, Tuple, Union
 
-import torch
+
+
 from tools.util.format import parse_enum
 from tools.util.progress_factory import ProgressFactory
 from tools.util.reflection import class_name
-from tools.util.torch import as_tensors
+
 from tools.util.typing import VEC_TYPE
 import numpy as np
 from tools.util.numpy import numpyify, numpyify_image
 from tools.serialization.json_convertible import JsonConvertible
-from tools.logger.logging import logger
+from tools.logger.logging import logger, handle_import_error
+
+try:
+    import torch
+    from tools.util.torch import as_tensors
+except ImportError as e:
+    from tools.util.mock_import import MockImport
+    handle_import_error(e, "torch", ignore=True)
+    torch = MockImport()
+    as_tensors = lambda x: x
+
+
 from PIL.Image import Exif, Image
 from tools.util.format import parse_format_string
 from tqdm.auto import tqdm
@@ -307,7 +319,7 @@ def load_mask(
         mask = np.array(mask_pil)
         # If spread was applied, reverse it
         if spread is not None:
-            msk_copy = np.zeros_like(mask, dtype=mask.dtype)
+            msk_copy = np.zeros_like(mask, dtype=np.dtype(out_dtype))
             for k, v in spread.items():
                 msk_copy[mask == int(k)] = int(v)
             mask = msk_copy
@@ -420,15 +432,18 @@ def save_mask(mask: VEC_TYPE,
         # Convert to int32
         mask = mask.astype(np.int32)
 
+    unique = np.unique(mask)
     # Check if all values are in range 0 - 255
     if mask.dtype not in [np.uint8, np.bool_]:
-        if not np.all((mask >= 0) & (mask <= 255)):
-            raise ValueError("Mask must be in range 0 - 255")
+        if (not np.all((mask >= 0) & (mask <= 255))):
+            if (len(unique) > 255):
+                raise ValueError("Mask must be in range 0 - 255, or have less than 256 unique values")
+            if not spread:
+                raise ValueError("Mask must be in range 0 - 255 if spread is False")
         else:
             mask = mask.astype(np.uint8)
 
     if mask.dtype == np.uint8:
-        unique = np.unique(mask)
         if len(unique) == 2 and max(unique) == 1 and min(unique) == 0 and spread:
             metadata["dtype"] = str(mask.dtype.name)
             mask = mask.astype(bool)
@@ -436,18 +451,17 @@ def save_mask(mask: VEC_TYPE,
     if pillow_mask_mode == None and mask.dtype == np.bool_:
         pillow_mask_mode = '1'
 
-    if spread and mask.dtype == np.uint8:
-        unique = np.unique(mask)
+    if spread and mask.dtype != np.bool_:
         if len(unique) > 1:
             maps = np.arange(0, 256, np.floor(
-                255 // (unique.shape[0] - 1)), dtype=np.uint8)
+                255 // (len(unique) - 1)), dtype=np.uint8)
         else:
             maps = np.array([0], dtype=np.uint8)
         metadata['spread'] = {x[0].item(): x[1].item()
                               for x in zip(maps, unique)}
-        metadata['dtype'] = str(mask.dtype.name)
-        msk_copy = np.zeros_like(mask, dtype=mask.dtype)
-        for i in range(unique.shape[0]):
+        metadata['dtype'] = str(unique.dtype.name)
+        msk_copy = np.zeros_like(mask, dtype=np.uint8)
+        for i in range(len(unique)):
             msk_copy[mask == unique[i]] = maps[i]
         mask = msk_copy
 
@@ -679,7 +693,7 @@ def inpaint_mask(image: np.ndarray,
     return image
 
 
-@as_tensors()
+@as_tensors
 def is_coordinate_in_mask(coord: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """
     Check if a coordinate is in a mask.

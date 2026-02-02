@@ -1,12 +1,17 @@
 from typing import Union, Optional
-from tools.logger.logging import logger
+from tools.logger.logging import logger, handle_import_error
 from tools.transforms.to_numpy import ToNumpy
 from tools.util.typing import NUMERICAL_TYPE, VEC_TYPE
 try:
     import torch
-except ImportError:
-    torch = None
+    from torch import Tensor
+except ImportError as e:
+    from tools.util.mock_import import MockImport
+    handle_import_error(e, "torch", ignore=True)
+    torch = MockImport()
+    Tensor = None
     pass
+
 import numpy as np
 
 # Hash of np.float types is not correctly implemented so set check does not work and list is used.
@@ -26,7 +31,7 @@ class ToNumpyImage(ToNumpy):
         self.output_dtype = output_dtype
 
     def transform(self, x: Union[NUMERICAL_TYPE, VEC_TYPE], **kwargs) -> np.ndarray:
-        if isinstance(x, torch.Tensor):
+        if Tensor and isinstance(x, Tensor):
             # Check if the tensor is a image tensor
             if len(x.shape) in [3, 4]:
                 x = x.permute(0, 2, 3, 1) if len(

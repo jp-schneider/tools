@@ -1,4 +1,4 @@
-from typing import Generator, Optional, Union, Tuple, Literal, Optional
+from typing import Generator, Optional, Union, Tuple, Literal, Optional, Any, Dict
 import numpy as np
 import cv2
 from tqdm.auto import tqdm
@@ -94,7 +94,7 @@ def write_mp4(frames: np.ndarray,
 
 @filer(default_ext='mp4')
 def write_mp4_generator(
-        frame_generator: Generator[np.ndarray, None, None],
+        frame_generator: Generator[Union[np.ndarray, Tuple[np.ndarray, Dict[str, Any]]], None, None],
         path: str = 'test.mp4',
         fps: float = 24.0,
         title: str = None,
@@ -109,8 +109,10 @@ def write_mp4_generator(
 
     Parameters
     ----------
-    frame_generator : np.ndarray
+    frame_generator : Union[np.ndarray, Tuple[np.ndarray, Dict[str, Any]]]
         Frame generator to write frames to a video in shape HxWxC or HxW. C is either 1 or 3.
+        Can be also a tuple, if so the first element must be the image, the second
+        shall be a dictionary for providing context arguments to the writer.
     path : str, optional
         Path to the video file, by default 'test.mp4'
     fps : float, optional
@@ -161,7 +163,10 @@ def write_mp4_generator(
                        counter_offset=frame_counter_offset
                        ) as writer:
         for frame in frame_generator:
-            writer.write(frame)
+            context = None
+            if isinstance(frame, tuple):
+                frame, context = frame
+            writer.write(frame, context)
             if progress_bar:
                 bar.update(1)
     return path
@@ -169,7 +174,7 @@ def write_mp4_generator(
 
 @filer(default_ext='mp4')
 def write_mask_mp4_generator(
-        frame_generator: Generator[np.ndarray, None, None],
+        frame_generator: Generator[Union[np.ndarray, Tuple[np.ndarray, Dict[str, Any]]], None, None],
         mask_generator: Generator[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]], None, None],
         path: str = 'test.mp4',
         fps: float = 24.0,
@@ -185,8 +190,10 @@ def write_mask_mp4_generator(
 
     Parameters
     ----------
-    frame_generator : Generator[np.ndarray, None, None]
+    frame_generator : Generator[Union[np.ndarray, Tuple[np.ndarray, Dict[str, Any]]], None, None]
         Frame generator to write frames to a video in shape HxWxC or HxW. C is either 1 or 3.
+        Can be also a tuple, if so the first element must be the image, the second
+        shall be a dictionary for providing context arguments to the writer.
     mask_generator : np.ndarray
         Mask generator to write frames to a video in shape HxWxC or HxW. C should be the number of masks.
         Accepts channel masks.
@@ -233,6 +240,10 @@ def write_mask_mp4_generator(
                        use_transparency_grid=True,
                        codec=codec) as writer:
         for frame in frame_generator:
+            context = None
+            if isinstance(frame, tuple):
+                frame, context = frame
+
             masks = next(mask_generator)
             oids = None
             if isinstance(masks, tuple):
@@ -257,7 +268,7 @@ def write_mask_mp4_generator(
                     plt.close(fig)
             else:
                 raise ValueError(f"Unsupported backend: {backend}.")
-            writer.write(inpainted_frame)
+            writer.write(inpainted_frame, context)
             if progress_bar:
                 bar.update(1)
     return path

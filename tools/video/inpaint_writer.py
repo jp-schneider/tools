@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import torch
 from tools.util.typing import DEFAULT
@@ -42,13 +42,14 @@ class InpaintWriter(Writer):
             torch.cat([grid, image_tensor], dim=0), torch.tensor([1, 0]))
         return (unflatten_batch_dims(composition.numpy(), batch_dims) * 255).round().astype(np.uint8)
 
-    def _process_frame(self, frame: np.ndarray) -> np.ndarray:
+    def _process_frame(self, frame: np.ndarray, context: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        if context is None:
+            context = dict()
         if frame.shape[2] == 4 and self.use_transparency_grid:
             frame = self._patch_transparency(frame)[..., :3]
         if self.inpaint_counter:
-            frame = put_text(frame.copy(), self.counter_format.format(self.frame_counter),
-                             placement="top-right", background_stroke=1)
+            inpaint_frame_count = context.get("inpaint_frame_counter", self.frame_counter)
+            frame = put_text(frame.copy(), str(inpaint_frame_count), placement="top-right", background_stroke=1, check_overlap=False)
         if self.inpaint_title is not None:
-            frame = put_text(frame.copy(), self.inpaint_title,
-                             placement="top-center", background_stroke=1)
+            frame = put_text(frame.copy(), self.inpaint_title, placement="top-center", background_stroke=1, check_overlap=False)
         return frame

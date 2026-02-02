@@ -1,26 +1,29 @@
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Literal, Tuple, Union, TYPE_CHECKING
 
-import torch
 from tools.util.format import parse_enum
 from tools.util.reflection import class_name
-from tools.util.torch import tensorify_image, as_tensors
 from tools.util.typing import _DEFAULT, DEFAULT, VEC_TYPE
 import numpy as np
 from tools.transforms.to_numpy import numpyify
 from tools.transforms.to_numpy_image import ToNumpyImage, numpyify_image
 from tools.serialization.json_convertible import JsonConvertible
-from tools.logger.logging import logger
+from tools.logger.logging import logger, handle_import_error
 from PIL.Image import Exif, Image
+
+LEGACY_EXIF = False # If true, will use legacy ExifTags handling for old Pillow versions.
+
 try:
     from PIL.ExifTags import Base as ExifTagsBase
 except Exception as err:
     if not TYPE_CHECKING:
+        # Old version of Pillow, where ExifTags.Base does not exist and tags are just a dict mapping
         if "cannot import name 'Base' from 'PIL.ExifTags'" in str(err):
             from PIL.ExifTags import TAGS as Exif_Tags
-            from enum import Enum
-            ExifTagsBase = Enum(
+            from enum import IntEnum
+            ExifTagsBase = IntEnum(
                 'ExifTagsBase', {v: k for k, v in Exif_Tags.items()})
+            LEGACY_EXIF = True
         else:
             ExifTagsBase = object
 
@@ -28,7 +31,6 @@ from tools.util.format import parse_format_string
 from tqdm.auto import tqdm
 from tools.util.path_tools import numerated_file_name, read_directory
 import os
-from torch.nn.functional import grid_sample
 from tools.util.progress_factory import ProgressFactory
 from tools.util.sized_generator import SizedGenerator, sized_generator
 
@@ -41,6 +43,19 @@ except Exception as err:
         plt = None
         cm = None
         Colormap = None
+
+try:
+    import torch
+    from tools.util.torch import tensorify_image, as_tensors
+    from torch.nn.functional import grid_sample
+except ImportError as e:
+    from tools.util.mock_import import MockImport
+    handle_import_error(e, "torch", ignore=True)
+    torch = MockImport()
+    grid_sample = MockImport()
+    tensorify_image = lambda x: x
+    as_tensors = lambda x: x
+
 import struct
 
 
@@ -78,13 +93,21 @@ def create_image_exif(metadata: Dict[Union[str, ExifTagsBase], Any]) -> Exif:
                                                         indent=0)
     make = class_name(create_image_exif)
     exif = Exif()
-    exif[ExifTagsBase.Make] = make
-    exif[ExifTagsBase.MakerNote] = metadata_json
+
+    def get_tag_or_id(tag: ExifTagsBase) -> Union[ExifTagsBase, int]:
+        global LEGACY_EXIF
+        if LEGACY_EXIF:
+            return tag.value
+        else:
+            return tag
+
+    exif[get_tag_or_id(ExifTagsBase.Make)] = make
+    exif[get_tag_or_id(ExifTagsBase.MakerNote)] = metadata_json
 
     for k, v in real_tags.items():
-        exif[k] = v
+        exif[get_tag_or_id(k)] = v
     for k, v in real_tags_named.items():
-        exif[ExifTagsBase(NAMED_TAGS.get(k))] = v
+        exif[get_tag_or_id(ExifTagsBase(NAMED_TAGS.get(k)))] = v
     return exif
 
 
@@ -1185,7 +1208,11 @@ def put_text(
         ova = overlap_area[0] if len(overlap_area) > 0 else None
         best_pos, ova = find_best_text_position(
             img.shape[0], img.shape[1],
-            position, offset, text_width, text_height, ova)
+            position, 
+            offset, 
+            text_width, 
+            text_height, 
+            ova)
         if best_pos is not None:
             if len(overlap_area) > 0:
                 overlap_area[0] = ova

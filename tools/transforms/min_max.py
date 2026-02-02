@@ -1,11 +1,18 @@
 from typing import Any, Optional, Tuple, Union
-import torch
-
 from tools.transforms.fittable_transform import FittableTransform
 from tools.transforms.invertable_transform import InvertableTransform
-from tools.transforms.to_tensor import tensorify
-from tools.logger.logging import logger
+from tools.logger.logging import logger, handle_import_error
 
+try:
+    import torch
+    from tools.transforms.to_tensor import tensorify
+    from torch.nn import Module
+except ImportError as e:
+    from tools.util.mock_import import MockImport
+    handle_import_error(e, "torch", ignore=True)
+    torch = MockImport()
+    Module = object
+    tensorify = lambda x: x
 
 def minmax(v: torch.Tensor,
            v_min: Optional[torch.Tensor] = None,
@@ -24,7 +31,7 @@ def minmax(v: torch.Tensor,
     return (v - v_min) / (v_max - v_min) * (new_max - new_min) + new_min
 
 
-class MinMax(InvertableTransform, FittableTransform, torch.nn.Module):
+class MinMax(InvertableTransform, FittableTransform, Module):
     """MinMax normalization."""
 
     def __init__(self,

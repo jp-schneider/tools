@@ -1,14 +1,22 @@
 from typing import Any, Union
-import torch
 
 from tools.transforms.fittable_transform import FittableTransform
 from tools.transforms.invertable_transform import InvertableTransform
-from tools.transforms.to_tensor import tensorify
 from tools.util.typing import _DEFAULT, DEFAULT
-from tools.logger.logging import logger
+from tools.logger.logging import logger, handle_import_error
 
+try:
+    import torch
+    from tools.transforms.to_tensor import tensorify
+    from torch.nn import Module
+except ImportError as e:
+    from tools.util.mock_import import MockImport
+    handle_import_error(e, "torch", ignore=True)
+    torch = MockImport()
+    Module = object
+    tensorify = lambda x: x
 
-class MeanStd(InvertableTransform, FittableTransform, torch.nn.Module):
+class MeanStd(InvertableTransform, FittableTransform, Module):
     """Mean standard deviation normalization."""
 
     def __init__(self,
