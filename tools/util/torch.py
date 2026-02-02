@@ -121,6 +121,7 @@ def as_tensors(keep_output: bool = False) -> Callable[[Callable[..., Any]], Call
     from tools.util.numpy import numpyify
 
     def decorator(fnc: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(fnc)
         def wrapper(*args, **kwargs) -> Any:
             nonlocal keep_output
             keep_output = kwargs.pop("keep_tensor", keep_output)

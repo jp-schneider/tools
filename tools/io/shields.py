@@ -40,7 +40,7 @@ def generate_shield_url(
     """
 
     base_url = "https://img.shields.io/badge/"
-    tree = ET.parse(path)
+    tree = ET.parse(svg_path)
     root = tree.getroot()
 
     if not root.tag.endswith("svg"):
@@ -78,6 +78,7 @@ def save_shield(svg_path: str,
                 color: str,
                 save_path: str,
                 left_text: Optional[str] = None,
+                make_dirs: bool = True,
                 **kwargs) -> str:
     """
     Generate a shield badge and save it to the specified path.
@@ -92,6 +93,7 @@ def save_shield(svg_path: str,
 
     color : str
         The color of the badge.
+        Might be css color, or "rgb(R,G,B)" with R,G,B in [0,255] 
 
     save_path : str
         The path where the badge image will be saved.
@@ -109,6 +111,11 @@ def save_shield(svg_path: str,
     # Download the shield with requests
     import requests
     response = requests.get(shield_url)
+    if not os.path.exists(os.path.dirname(save_path)) and make_dirs:
+        os.makedirs(os.path.dirname(save_path))
+    if response.status_code != 200:
+        raise ValueError(
+            f"Error downloading shield: {response.status_code}, {response.reason}")
     with open(save_path, 'wb') as f:
         f.write(response.content)
     return save_path

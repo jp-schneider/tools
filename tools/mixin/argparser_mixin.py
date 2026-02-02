@@ -3,9 +3,10 @@ import argparse
 import inspect
 import logging
 from argparse import ArgumentParser
-from dataclasses import MISSING, Field
+from dataclasses import MISSING, Field, dataclass, field
 import pathlib
-from typing import Any, Dict, List, Optional, Type, get_args
+from typing import Any, Dict, List, Optional, Type, get_args, Union
+from types import FunctionType, MethodType
 from tools.util.typing import is_list_type
 from simple_parsing.docstring import get_attribute_docstring
 from typing_inspect import is_literal_type, is_optional_type, is_tuple_type, is_classvar, is_union_type
@@ -21,7 +22,6 @@ WARNING_ON_UNSUPPORTED_TYPE = True
 vinfo = sys.version_info
 IS_ABOVE_3_9 = (vinfo.major >= 3 and vinfo.minor > 8) or vinfo.major > 3
 
-
 def set_warning_on_unsupported_type(warning: bool) -> None:
     """Sets the warning on unsupported type.
 
@@ -33,6 +33,59 @@ def set_warning_on_unsupported_type(warning: bool) -> None:
     global WARNING_ON_UNSUPPORTED_TYPE
     WARNING_ON_UNSUPPORTED_TYPE = warning
 
+@dataclass()
+class SubparserArguments():
+    """Arguments for creating subparsers."""
+
+    name: str
+    """Name of the subparser. As shown in the cli. By default the class name is used."""
+
+    entrypoint: Union[FunctionType, MethodType]
+    """Function which will be called for the subparser."""
+
+    help: Optional[str] = None
+    """Help text for the subparser."""
+
+    parser_kwargs: Dict[str, Any] = field(default_factory=dict)
+    """Additional kwargs for the subparser parser."""
+
+def _hasattr(obj: Union[Any, dict], name: str) -> bool:
+    """Check if objects hasattr or check if name is a key in obj if obj is a dict.
+
+    Parameters
+    ----------
+    obj : Union[Any, dict]
+        Object to check.
+    name : str
+        Name of the attribute or key.
+
+    Returns
+    -------
+    bool
+        If the object has the attribute or key.
+    """
+    if isinstance(obj, dict):
+        return name in obj
+    return hasattr(obj, name)
+
+def _getattr(obj: Union[Any, dict], name: str) -> Any:
+    """Get attribute of object or get value from dict if obj is a dict.
+
+    Parameters
+    ----------
+    obj : Union[Any, dict]
+        Object to get attribute from.
+    name : str
+        Name of the attribute or key.
+
+    Returns
+    -------
+    Any
+        Value of the attribute or key.
+    """
+    if isinstance(obj, dict):
+        return obj[name]
+    return getattr(obj, name)
 
 class ParseEnumAction(argparse.Action):
     """Custom action to parse enum values from the command line."""
@@ -57,7 +110,7 @@ class ParseEnumAction(argparse.Action):
         setattr(namespace, self.dest, v)
 
 
-class ArgparserMixin:
+class ArgparserMixin():
     """Mixin wich provides functionality to construct a argparser for a
     dataclass type and applies its data."""
 
@@ -306,6 +359,8 @@ class ArgparserMixin:
             # default value
             if field.default != MISSING:
                 args["default"] = field.default
+            elif field.default_factory != MISSING:
+                args["default"] = field.default_factory()
             # docstring
             name_prefix = args.pop("name_prefix", "")
             if name_prefix:
@@ -334,13 +389,13 @@ class ArgparserMixin:
         return []
 
     @classmethod
-    def from_parsed_args(cls, parsed_args: Any, sep: str = "-") -> 'ArgparserMixin':
+    def from_parsed_args(cls, parsed_args: Union[Any, dict], sep: str = "-") -> 'ArgparserMixin':
         """Creates an ArgparserMixin object from parsed_args which is the result
         of the argparser.parse_args() method.
         Parameters
         ----------
-        parsed_args : Any
-            The parsed arguments.
+        parsed_args : Union[Any, dict]
+            The parsed arguments (argparser.Namespace or dict).
         Returns
         -------
         ArgparserMixin
@@ -351,18 +406,17 @@ class ArgparserMixin:
         ret = dict()
         for field in fields:
             name = cls.get_field_name_with_prefix_for_argparser(field)
-            if hasattr(parsed_args, name):
-                value = getattr(parsed_args, name)
+            if _hasattr(parsed_args, name):
+                value = _getattr(parsed_args, name)
                 ret[field.name] = cls._get_parser_arg_value(field, value)
                 continue
             if field.name in cls.positional_args():
                 # If its a positional argument, we need to set the name without prefix
                 n = field.name.replace("_", sep)
-                if hasattr(parsed_args, n):
-                    value = getattr(parsed_args, n)
+                if _hasattr(parsed_args, n):
+                    value = _getattr(parsed_args, n)
                     ret[field.name] = cls._get_parser_arg_value(field, value)
                     continue
-
         return cls(**ret)
 
     @classmethod
@@ -481,3 +535,65 @@ class ArgparserMixin:
         else:
             config = cls.from_parsed_args(args)
         return config
+
+
+
+
+def invoke_with_subparsers(
+    parser: argparse.ArgumentParser,
+    *subparsers: SubparserArguments
+) -> Any:
+    """Dispatches to subparsers based on the command line arguments.
+    
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The main argument parser.
+
+    *subparsers : SubparserArguments
+        The subparsers to add to the main parser.
+        See SubparserArguments for details.
+
+    Returns
+    -------
+    Any
+        The result of the invoked subparser entrypoint.
+
+    """
+    import inspect
+    param_mapping: Dict[str, Dict[str, Type[ArgparserMixin]]] = dict()
+    subp = parser.add_subparsers(dest='subparser')
+
+    for subparser_args in subparsers:
+        subparser = subp.add_parser(subparser_args.name, help=subparser_args.help, **subparser_args.parser_kwargs)
+        signature = inspect.signature(subparser_args.entrypoint)
+        # Get all arguments with are annotated by ArgparserMixin
+        for param in signature.parameters.values():
+            if issubclass(param.annotation, ArgparserMixin):
+                if subparser_args.name not in param_mapping:
+                    param_mapping[subparser_args.name] = dict()
+                subparser = param.annotation.get_parser(subparser)
+                # Store usable param mappings
+                param_mapping[subparser_args.name][param.name] = param.annotation
+        
+    kwargs = vars(parser.parse_args())
+    picked = kwargs.pop('subparser')
+
+    picked_subparsed_args = next((sp for sp in subparsers if sp.name == picked), None)
+
+    if not picked_subparsed_args:
+        print(f"No entrypoint was specified. Did you wanted to use one of the entrypoints: {', '.join(param_mapping.keys())}?")
+        print("Use -h for help.")
+        return
+    
+    entrypoint = picked_subparsed_args.entrypoint
+    def mapping_func(arg) -> (str, ArgparserMixin):
+        k, v = arg
+        v_args = v.from_parsed_args(kwargs)
+        if hasattr(v_args, "prepare"):
+            v_args.prepare()
+        return (k, v_args)
+    # Get parameters for the entrypoint
+    valid_params: Dict[str, ArgparserMixin] = dict(map(mapping_func, param_mapping[picked].items()))
+    # Invoke entrypoint with the parsed arguments
+    return entrypoint(**valid_params)

@@ -277,3 +277,55 @@ def _make_log_record(logger: logging.Logger, level: int, msg: str, *args, exc_in
     record = logger.makeRecord(logger.name, level, fn, lno, msg, args,
                                exc_info, func, extra, sinfo)
     return record
+
+
+def handle_import_error(e: ImportError, *module_name: str, ignore: bool = False, text: Optional[str] = None):
+    """
+    Default handle wrapper for import errors to report and handle eventually.
+
+    Import errors of the same module are messaged only once.
+
+    Parameters
+    ----------
+    e : ImportError
+        Import error occured, which will be checked agains module names
+    *module_names: str
+        One or multiple module names which should be addressed using the current handle.
+    ignore : bool, optional
+        If the error can be ignored, e.g. does not prevent the execution, but only limits functionality, by default False
+    text : Optional[str], optional
+        A custom error text. Supports format strings, by default None
+        E.g.
+        "The Import of package {module} failed!"
+        {module} gets replaced with the actual error module.
+    """
+    errt = str(e)
+    error_texts = [f"No module named '{x}'" for x in module_name]
+    # Check if error matches module names
+    contains = [x in errt for x in error_texts]
+    if any(contains):
+        # Matched
+        i = contains.index(True)
+        hit_name = module_name[i] 
+        if get_messaged("IMPORT_ERROR_" + hit_name.upper()):
+            if not ignore:
+                raise e
+            else:
+                pass
+        else:
+            from tools.util.format import parse_format_string
+            if text is None:
+                if ignore:
+                    text = "Could not import '" + hit_name + "' due to an ImportError. Is the corresponding package installed? The error can be ignored, yet functionality is limited."
+                else:
+                    text = "Could not import '" + hit_name + "' due to an ImportError. Is the corresponding package installed?"
+            else:
+                text = parse_format_string(text, [dict(module=hit_name)])[0]
+            if ignore:
+                logger.warning(text)
+            else:
+                logger.error(text, exc_info=e)
+                raise e
+    else:
+        # Unmatched Unknown Error
+        raise e
