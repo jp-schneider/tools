@@ -3,9 +3,9 @@ import argparse
 import inspect
 import logging
 from argparse import ArgumentParser
-from dataclasses import MISSING, Field, dataclass, field
+from dataclasses import MISSING as DC_MISSING, Field, dataclass, field
 import pathlib
-from typing import Any, Dict, List, Optional, Type, get_args, Union
+from typing import Any, Dict, List, Optional, Type, get_args, Union, TypeVar
 from types import FunctionType, MethodType
 from tools.util.typing import is_list_type
 from simple_parsing.docstring import get_attribute_docstring
@@ -15,6 +15,11 @@ from tools.error import UnsupportedTypeError, IgnoreTypeError
 from enum import Enum
 from tools.logger.logging import logger
 from tools.serialization.json_convertible import JsonConvertible
+from tools.util.reflection import dynamic_import
+from tools.util.typing import _MISSING, MISSING
+
+
+T = TypeVar('T', bound='ArgparserMixin')
 
 WARNING_ON_UNSUPPORTED_TYPE = True
 """If true, a warning will be printed if a type is not supported."""
@@ -40,8 +45,18 @@ class SubparserArguments():
     name: str
     """Name of the subparser. As shown in the cli. By default the class name is used."""
 
-    entrypoint: Union[FunctionType, MethodType]
-    """Function which will be called for the subparser."""
+    entrypoint: Union[FunctionType, MethodType, str]
+    """Function which will be called for the subparser. Can be a function or a string representing a fully qualified function name of the method.
+    If a string is provided, the function will be imported at runtime, and only after argparser creation is done.
+    If so entrypoint_parameters must be provided to be able to create the argparser without inspecting the function.
+    """
+
+    entrypoint_parameters: Optional[Union[Dict[str, Type[Any]], _MISSING]] = field(default=MISSING)
+    """Optional dictionary of parameter names to types for the entrypoint function.
+    If not provided, the types will be inferred from the function signature. Providing this can speed up the argparser creation,
+    as the function does not need to be inspected and unessarly imports dont need to be done.
+    Defaults to DC_MISSING.
+    """
 
     help: Optional[str] = None
     """Help text for the subparser."""
@@ -305,7 +320,7 @@ class ArgparserMixin():
         ]
 
     @classmethod
-    def get_parser(cls, parser: Optional[ArgumentParser] = None, sep: str = "-") -> ArgumentParser:
+    def get_parser(cls: Type[T], parser: Optional[ArgumentParser] = None, sep: str = "-") -> ArgumentParser:
         """Creates / fills an Argumentparser with the fields of the current class.
         Inheriting class must be a dataclass to get annotations and fields.
         By default only puplic field are used (=field with a leading underscore "_" are ignored.)
@@ -357,9 +372,9 @@ class ArgparserMixin():
                     logging.debug(msg)
                 continue
             # default value
-            if field.default != MISSING:
+            if field.default != DC_MISSING:
                 args["default"] = field.default
-            elif field.default_factory != MISSING:
+            elif field.default_factory != DC_MISSING:
                 args["default"] = field.default_factory()
             # docstring
             name_prefix = args.pop("name_prefix", "")
@@ -389,7 +404,7 @@ class ArgparserMixin():
         return []
 
     @classmethod
-    def from_parsed_args(cls, parsed_args: Union[Any, dict], sep: str = "-") -> 'ArgparserMixin':
+    def from_parsed_args(cls: T, parsed_args: Union[Any, dict], sep: str = "-") -> T:
         """Creates an ArgparserMixin object from parsed_args which is the result
         of the argparser.parse_args() method.
         Parameters
@@ -453,10 +468,10 @@ class ArgparserMixin():
             name = self.get_field_name_with_prefix_for_argparser(field)
             if hasattr(parsed_args, name):
                 value = getattr(parsed_args, name)
-                if ((field.default != MISSING and (value is not None and value != field.default)) or
-                        (field.default_factory != MISSING and (
+                if ((field.default != DC_MISSING and (value is not None and value != field.default)) or
+                        (field.default_factory != DC_MISSING and (
                             value is not None and value != field.default_factory()))
-                        or (field.default == MISSING and field.default_factory == MISSING)):
+                        or (field.default == DC_MISSING and field.default_factory == DC_MISSING)):
                     new_value = self._get_parser_arg_value(field, value)
                     old_value = getattr(self, field.name)
                     if self.allow_cli_config_overwrite(field, old_value, new_value):
@@ -491,11 +506,11 @@ class ArgparserMixin():
         return True
 
     @classmethod
-    def parse_args(cls,
+    def parse_args(cls: Type[T],
                    parser: ArgumentParser = None,
                    add_config_path: bool = True,
                    sep: str = "-",
-                   ) -> "ArgparserMixin":
+                   ) -> T:
         """Parses the arguments from the command line and returns a config object.
 
         Parameters
@@ -511,7 +526,7 @@ class ArgparserMixin():
 
         Returns
         -------
-        ArgparserMixin
+        T
             The instance of the object filled with cli data.
         """
         from tools.logger.logging import logger
@@ -524,7 +539,7 @@ class ArgparserMixin():
 
         args = parser.parse_args()
 
-        config: ArgparserMixin = None
+        config: T = None
         if add_config_path and args.config_path:
             args.config_path = args.config_path.strip("\"").strip("\'")
             config = JsonConvertible.load_from_file(args.config_path)
@@ -564,21 +579,44 @@ def invoke_with_subparsers(
     param_mapping: Dict[str, Dict[str, Type[ArgparserMixin]]] = dict()
     subp = parser.add_subparsers(dest='subparser')
 
-    for subparser_args in subparsers:
-        subparser = subp.add_parser(subparser_args.name, help=subparser_args.help, **subparser_args.parser_kwargs)
-        signature = inspect.signature(subparser_args.entrypoint)
-        # Get all arguments with are annotated by ArgparserMixin
-        for param in signature.parameters.values():
-            if issubclass(param.annotation, ArgparserMixin):
-                if subparser_args.name not in param_mapping:
-                    param_mapping[subparser_args.name] = dict()
-                subparser = param.annotation.get_parser(subparser)
-                # Store usable param mappings
-                param_mapping[subparser_args.name][param.name] = param.annotation
-        
-    kwargs = vars(parser.parse_args())
-    picked = kwargs.pop('subparser')
+    def import_ep_params(subparser: ArgumentParser, subparser_args: Any, ep_params: Optional[Dict[str, Type[Any]]]) -> ArgumentParser:
+        if ep_params is None:
+            return subparser
+        for param_name, param_type in ep_params.items():
+            if subparser_args.name not in param_mapping:
+                param_mapping[subparser_args.name] = dict()
+            if issubclass(param_type, ArgparserMixin):
+                subparser = param_type.get_parser(subparser)
+                param_mapping[subparser_args.name][param_name] = param_type
+        return subparser
 
+    for subparser_args in subparsers:
+        subparser: ArgumentParser = subp.add_parser(subparser_args.name, help=subparser_args.help, **subparser_args.parser_kwargs)
+        need_signature_inspection = False
+
+        # If entrypoint is a string, check if entrypoint_parameters are provided
+        if isinstance(subparser_args.entrypoint, str):
+            if subparser_args.entrypoint_parameters is MISSING:
+                logger.info(f"Importing entrypoint function {subparser_args.entrypoint} for subparser {subparser_args.name} to inspect its parameters, since no entrypoint_parameters were provided. If this should not happen, set entrypoint_parameters in the SubparserArguments or set them to None if there")
+                entrypoint = dynamic_import(subparser_args.entrypoint)
+                subparser_args.entrypoint = entrypoint
+                need_signature_inspection = True
+        elif isinstance(subparser_args.entrypoint, (FunctionType, MethodType)):
+            if subparser_args.entrypoint_parameters is MISSING:
+                need_signature_inspection = True
+        else:
+            raise ValueError(f"Unsupported entrypoint type: {type(subparser_args.entrypoint).__name__} for subparser {subparser_args.name}. Must be a function or a string representing a fully qualified function name.")
+
+        if need_signature_inspection:
+            signature = inspect.signature(subparser_args.entrypoint)
+            # Get all arguments with are annotated by ArgparserMixin
+            subparser = import_ep_params(subparser, subparser_args, {param.name: param.annotation for param in signature.parameters.values()})
+        else:
+            subparser = import_ep_params(subparser, subparser_args, subparser_args.entrypoint_parameters)
+        
+    kwargs = dict(vars(parser.parse_args()))
+
+    picked = kwargs.pop('subparser')
     picked_subparsed_args = next((sp for sp in subparsers if sp.name == picked), None)
 
     if not picked_subparsed_args:
@@ -587,6 +625,9 @@ def invoke_with_subparsers(
         return
     
     entrypoint = picked_subparsed_args.entrypoint
+    if isinstance(entrypoint, str):
+        entrypoint = dynamic_import(entrypoint)
+
     def mapping_func(arg) -> (str, ArgparserMixin):
         k, v = arg
         v_args = v.from_parsed_args(kwargs)
